@@ -386,49 +386,6 @@ func TestReconcile_DeleteRemovesListener(t *testing.T) {
 	}
 }
 
-func TestReconcile_FinalizerMigration(t *testing.T) {
-	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "nginx-gateway"},
-		Spec: gatewayv1.GatewaySpec{
-			GatewayClassName: "nginx",
-			Listeners:        []gatewayv1.Listener{},
-		},
-	}
-	httpRoute := &gatewayv1.HTTPRoute{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-route",
-			Namespace:  "default",
-			Finalizers: []string{oldFinalizerName},
-			Annotations: map[string]string{
-				"cert-manager.io/cluster-issuer": "letsencrypt",
-			},
-		},
-		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"test.example.com"},
-		},
-	}
-
-	r := newReconciler(gateway, httpRoute)
-	ctx := context.Background()
-
-	_, err := r.Reconcile(ctx, ctrl.Request{
-		NamespacedName: types.NamespacedName{Name: "test-route", Namespace: "default"},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var route gatewayv1.HTTPRoute
-	_ = r.Get(ctx, types.NamespacedName{Name: "test-route", Namespace: "default"}, &route)
-
-	if controllerutil.ContainsFinalizer(&route, oldFinalizerName) {
-		t.Error("old finalizer should have been removed")
-	}
-	if !controllerutil.ContainsFinalizer(&route, finalizerName) {
-		t.Error("new finalizer should have been added")
-	}
-}
-
 func TestReconcile_MultipleHostnames(t *testing.T) {
 	gateway := &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "nginx-gateway"},

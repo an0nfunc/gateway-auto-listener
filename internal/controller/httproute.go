@@ -20,7 +20,6 @@ import (
 
 const (
 	finalizerName           = "gateway-auto-listener/finalizer"
-	oldFinalizerName        = "httproute-cert-controller.itsh.dev/finalizer"
 	clusterIssuerAnnotation = "cert-manager.io/cluster-issuer"
 	issuerAnnotation        = "cert-manager.io/issuer"
 	managedByLabel          = "gateway-auto-listener/managed-by"
@@ -90,16 +89,6 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	var httpRoute gatewayv1.HTTPRoute
 	if err := r.Get(ctx, req.NamespacedName, &httpRoute); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
-
-	// Migrate old finalizer to new one
-	if controllerutil.ContainsFinalizer(&httpRoute, oldFinalizerName) {
-		controllerutil.RemoveFinalizer(&httpRoute, oldFinalizerName)
-		controllerutil.AddFinalizer(&httpRoute, finalizerName)
-		if err := r.Update(ctx, &httpRoute); err != nil {
-			return ctrl.Result{}, err
-		}
-		log.Info("migrated finalizer from old name to new name")
 	}
 
 	if !r.hasCertAnnotation(&httpRoute) {
