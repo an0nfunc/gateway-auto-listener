@@ -1,0 +1,30 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "gateway-auto-listener.fullname" . }}
+  labels:
+    {{- include "gateway-auto-listener.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "gateway-auto-listener.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gateway-auto-listener.fullname" . }}-metrics
+  labels:
+    {{- include "gateway-auto-listener.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "gateway-auto-listener.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

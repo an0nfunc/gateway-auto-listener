@@ -1,0 +1,20 @@
+apiVersion: v2
+name: gateway-auto-listener
+description: Kubernetes controller that auto-creates Gateway HTTPS listeners from HTTPRoutes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">= 1.28.0"
+home: https://github.com/an0nfunc/gateway-auto-listener
+sources:
+  - https://github.com/an0nfunc/gateway-auto-listener
+maintainers:
+  - name: an0nfunc
+    url: https://github.com/an0nfunc
+keywords:
+  - kubernetes
+  - gateway-api
+  - cert-manager
+  - httproute
+  - tls
+  - controller-runtime
