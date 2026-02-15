@@ -437,6 +437,198 @@ func TestReconcile_MultipleHostnames(t *testing.T) {
 	}
 }
 
+func TestReconcile_HostnameChangeRemovesOldListener(t *testing.T) {
+	ns := gatewayv1.Namespace("nginx-gateway")
+	oldHostname := gatewayv1.Hostname("old.example.com")
+	tlsMode := gatewayv1.TLSModeTerminate
+	allowAll := gatewayv1.NamespacesFromAll
+
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "nginx-gateway"},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "nginx",
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https-old-example-com",
+					Hostname: &oldHostname,
+					Port:     443,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					AllowedRoutes: &gatewayv1.AllowedRoutes{
+						Namespaces: &gatewayv1.RouteNamespaces{From: &allowAll},
+					},
+					TLS: &gatewayv1.ListenerTLSConfig{
+						Mode: &tlsMode,
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{Name: "old-example-com-tls", Namespace: &ns},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// HTTPRoute has finalizer and annotation tracking the old hostname
+	httpRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-route",
+			Namespace:  "default",
+			Finalizers: []string{finalizerName},
+			Annotations: map[string]string{
+				"cert-manager.io/cluster-issuer": "letsencrypt",
+				managedHostnamesAnnotation:       "https-old-example-com",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"new.example.com"},
+		},
+	}
+
+	r := newReconciler(gateway, httpRoute)
+	ctx := context.Background()
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-route", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var gw gatewayv1.Gateway
+	_ = r.Get(ctx, types.NamespacedName{Name: "default", Namespace: "nginx-gateway"}, &gw)
+
+	if len(gw.Spec.Listeners) != 1 {
+		t.Fatalf("expected 1 listener, got %d", len(gw.Spec.Listeners))
+	}
+
+	if string(gw.Spec.Listeners[0].Name) != "https-new-example-com" {
+		t.Errorf("expected listener 'https-new-example-com', got %q", gw.Spec.Listeners[0].Name)
+	}
+
+	// Verify annotation was updated
+	var route gatewayv1.HTTPRoute
+	_ = r.Get(ctx, types.NamespacedName{Name: "test-route", Namespace: "default"}, &route)
+	if route.Annotations[managedHostnamesAnnotation] != "https-new-example-com" {
+		t.Errorf("expected annotation 'https-new-example-com', got %q", route.Annotations[managedHostnamesAnnotation])
+	}
+}
+
+func TestReconcile_BootstrapSetsAnnotation(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "nginx-gateway"},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "nginx",
+			Listeners:        []gatewayv1.Listener{},
+		},
+	}
+
+	// Existing route with finalizer but no managed-hostnames annotation (pre-upgrade)
+	httpRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-route",
+			Namespace:  "default",
+			Finalizers: []string{finalizerName},
+			Annotations: map[string]string{
+				"cert-manager.io/cluster-issuer": "letsencrypt",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"example.com"},
+		},
+	}
+
+	r := newReconciler(gateway, httpRoute)
+	ctx := context.Background()
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-route", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Annotation should be set after first reconcile
+	var route gatewayv1.HTTPRoute
+	_ = r.Get(ctx, types.NamespacedName{Name: "test-route", Namespace: "default"}, &route)
+	if route.Annotations[managedHostnamesAnnotation] != "https-example-com" {
+		t.Errorf("expected annotation 'https-example-com', got %q", route.Annotations[managedHostnamesAnnotation])
+	}
+}
+
+func TestReconcile_ManualListenerNotRemoved(t *testing.T) {
+	manualHostname := gatewayv1.Hostname("manual.example.com")
+	tlsMode := gatewayv1.TLSModeTerminate
+	allowAll := gatewayv1.NamespacesFromAll
+	ns := gatewayv1.Namespace("nginx-gateway")
+
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "nginx-gateway"},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "nginx",
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https-manual-example-com",
+					Hostname: &manualHostname,
+					Port:     443,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					AllowedRoutes: &gatewayv1.AllowedRoutes{
+						Namespaces: &gatewayv1.RouteNamespaces{From: &allowAll},
+					},
+					TLS: &gatewayv1.ListenerTLSConfig{
+						Mode: &tlsMode,
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{Name: "manual-example-com-tls", Namespace: &ns},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	httpRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-route",
+			Namespace:  "default",
+			Finalizers: []string{finalizerName},
+			Annotations: map[string]string{
+				"cert-manager.io/cluster-issuer": "letsencrypt",
+				managedHostnamesAnnotation:       "https-other-example-com",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+		},
+	}
+
+	r := newReconciler(gateway, httpRoute)
+	ctx := context.Background()
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "test-route", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var gw gatewayv1.Gateway
+	_ = r.Get(ctx, types.NamespacedName{Name: "default", Namespace: "nginx-gateway"}, &gw)
+
+	// Manual listener should still be there, plus the new one
+	if len(gw.Spec.Listeners) != 2 {
+		t.Fatalf("expected 2 listeners (manual + new), got %d", len(gw.Spec.Listeners))
+	}
+
+	names := make(map[string]bool)
+	for _, l := range gw.Spec.Listeners {
+		names[string(l.Name)] = true
+	}
+	if !names["https-manual-example-com"] {
+		t.Error("manual listener was incorrectly removed")
+	}
+	if !names["https-app-example-com"] {
+		t.Error("new listener was not added")
+	}
+}
+
 func TestReconcile_DisallowedHostname_RecordsEvent(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant-bad"}}
 	gateway := &gatewayv1.Gateway{

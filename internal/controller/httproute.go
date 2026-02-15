@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -19,11 +20,12 @@ import (
 )
 
 const (
-	finalizerName           = "gateway-auto-listener/finalizer"
-	clusterIssuerAnnotation = "cert-manager.io/cluster-issuer"
-	issuerAnnotation        = "cert-manager.io/issuer"
-	managedByLabel          = "gateway-auto-listener/managed-by"
-	managedByValue          = "gateway-auto-listener"
+	finalizerName              = "gateway-auto-listener/finalizer"
+	clusterIssuerAnnotation    = "cert-manager.io/cluster-issuer"
+	issuerAnnotation           = "cert-manager.io/issuer"
+	managedByLabel             = "gateway-auto-listener/managed-by"
+	managedByValue             = "gateway-auto-listener"
+	managedHostnamesAnnotation = "gateway-auto-listener/managed-hostnames"
 )
 
 type HTTPRouteReconciler struct {
@@ -117,15 +119,15 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	if err := r.ensureListeners(ctx, &httpRoute); err != nil {
-		log.Error(err, "failed to ensure listeners")
+	if err := r.reconcileListeners(ctx, &httpRoute); err != nil {
+		log.Error(err, "failed to reconcile listeners")
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
 }
 
-func (r *HTTPRouteReconciler) ensureListeners(ctx context.Context, httpRoute *gatewayv1.HTTPRoute) error {
+func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute *gatewayv1.HTTPRoute) error {
 	log := log.FromContext(ctx)
 
 	var gateway gatewayv1.Gateway
@@ -141,8 +143,35 @@ func (r *HTTPRouteReconciler) ensureListeners(ctx context.Context, httpRoute *ga
 		existingListeners[string(l.Name)] = true
 	}
 
-	patch := client.MergeFrom(gateway.DeepCopy())
+	// Build set of current desired listener names
+	currentListeners := make(map[string]bool)
+	for _, hostname := range httpRoute.Spec.Hostnames {
+		currentListeners[hostnameToListenerName(string(hostname))] = true
+	}
 
+	// Determine previously managed listeners from annotation
+	previousListeners := make(map[string]bool)
+	if prev := httpRoute.Annotations[managedHostnamesAnnotation]; prev != "" {
+		for _, name := range strings.Split(prev, ",") {
+			previousListeners[name] = true
+		}
+	}
+
+	// Remove stale listeners (previously managed but no longer desired)
+	gwPatch := client.MergeFrom(gateway.DeepCopy())
+	var removed int
+	var newGWListeners []gatewayv1.Listener
+	for _, l := range gateway.Spec.Listeners {
+		name := string(l.Name)
+		if previousListeners[name] && !currentListeners[name] {
+			log.Info("removing stale listener", "listener", name)
+			removed++
+			continue
+		}
+		newGWListeners = append(newGWListeners, l)
+	}
+
+	// Add new listeners
 	var added int
 	for _, hostname := range httpRoute.Spec.Hostnames {
 		if err := r.validateHostname(ctx, string(hostname), httpRoute.Namespace); err != nil {
@@ -153,8 +182,11 @@ func (r *HTTPRouteReconciler) ensureListeners(ctx context.Context, httpRoute *ga
 		}
 
 		listenerName := hostnameToListenerName(string(hostname))
-		if existingListeners[listenerName] {
+		if existingListeners[listenerName] && !previousListeners[listenerName] {
 			log.V(1).Info("listener already exists", "listener", listenerName)
+			continue
+		}
+		if existingListeners[listenerName] && previousListeners[listenerName] {
 			continue
 		}
 
@@ -184,23 +216,38 @@ func (r *HTTPRouteReconciler) ensureListeners(ctx context.Context, httpRoute *ga
 				},
 			},
 		}
-		gateway.Spec.Listeners = append(gateway.Spec.Listeners, listener)
+		newGWListeners = append(newGWListeners, listener)
 		added++
 		log.Info("adding listener", "listener", listenerName, "hostname", hostname, "secret", secretName)
 	}
 
-	if added == 0 {
-		return nil
+	if added > 0 || removed > 0 {
+		gateway.Spec.Listeners = newGWListeners
+		if gateway.Labels == nil {
+			gateway.Labels = make(map[string]string)
+		}
+		gateway.Labels[managedByLabel] = managedByValue
+		if err := r.Patch(ctx, &gateway, gwPatch); err != nil {
+			return fmt.Errorf("failed to patch gateway: %w", err)
+		}
 	}
 
-	// Label the gateway to indicate it's managed
-	if gateway.Labels == nil {
-		gateway.Labels = make(map[string]string)
+	// Update the managed-hostnames annotation on the HTTPRoute
+	var managedNames []string
+	for name := range currentListeners {
+		managedNames = append(managedNames, name)
 	}
-	gateway.Labels[managedByLabel] = managedByValue
+	sort.Strings(managedNames)
+	newAnnotation := strings.Join(managedNames, ",")
 
-	if err := r.Patch(ctx, &gateway, patch); err != nil {
-		return fmt.Errorf("failed to patch gateway: %w", err)
+	if httpRoute.Annotations[managedHostnamesAnnotation] != newAnnotation {
+		if httpRoute.Annotations == nil {
+			httpRoute.Annotations = make(map[string]string)
+		}
+		httpRoute.Annotations[managedHostnamesAnnotation] = newAnnotation
+		if err := r.Update(ctx, httpRoute); err != nil {
+			return fmt.Errorf("failed to update httproute annotation: %w", err)
+		}
 	}
 
 	return nil
@@ -218,9 +265,15 @@ func (r *HTTPRouteReconciler) removeListeners(ctx context.Context, httpRoute *ga
 	}
 
 	listenersToRemove := make(map[string]bool)
+	// Include current hostnames
 	for _, hostname := range httpRoute.Spec.Hostnames {
-		listenerName := hostnameToListenerName(string(hostname))
-		listenersToRemove[listenerName] = true
+		listenersToRemove[hostnameToListenerName(string(hostname))] = true
+	}
+	// Include previously managed hostnames from annotation
+	if prev := httpRoute.Annotations[managedHostnamesAnnotation]; prev != "" {
+		for _, name := range strings.Split(prev, ",") {
+			listenersToRemove[name] = true
+		}
 	}
 
 	patch := client.MergeFrom(gateway.DeepCopy())
