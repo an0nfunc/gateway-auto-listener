@@ -11,10 +11,13 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
@@ -315,7 +318,69 @@ func (r *HTTPRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.HTTPRoute{}).
 		Watches(&gatewayv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.gatewayToHTTPRoutes)).
+		Watches(&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.namespaceToHTTPRoutes),
+			builder.WithPredicates(r.namespaceAnnotationChanged()),
+		).
 		Complete(r)
+}
+
+// namespaceToHTTPRoutes maps a Namespace event to all managed HTTPRoutes in that namespace,
+// enabling re-reconciliation when the allowed-hostnames annotation changes.
+func (r *HTTPRouteReconciler) namespaceToHTTPRoutes(ctx context.Context, obj client.Object) []reconcile.Request {
+	ns, ok := obj.(*corev1.Namespace)
+	if !ok {
+		return nil
+	}
+
+	if r.ValidatedNSPrefix != "" && !strings.HasPrefix(ns.Name, r.ValidatedNSPrefix) {
+		return nil
+	}
+
+	var httpRouteList gatewayv1.HTTPRouteList
+	if err := r.List(ctx, &httpRouteList, client.InNamespace(ns.Name)); err != nil {
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, route := range httpRouteList.Items {
+		if !r.hasCertAnnotation(&route) {
+			continue
+		}
+		if !controllerutil.ContainsFinalizer(&route, finalizerName) {
+			continue
+		}
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      route.Name,
+				Namespace: route.Namespace,
+			},
+		})
+	}
+	return requests
+}
+
+func (r *HTTPRouteReconciler) namespaceAnnotationChanged() predicate.Predicate {
+	annotation := r.AllowedHostnamesAnnotation
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			if annotation == "" {
+				return false
+			}
+			_, exists := e.Object.GetAnnotations()[annotation]
+			return exists
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if annotation == "" {
+				return false
+			}
+			oldVal := e.ObjectOld.GetAnnotations()[annotation]
+			newVal := e.ObjectNew.GetAnnotations()[annotation]
+			return oldVal != newVal
+		},
+		DeleteFunc:  func(e event.DeleteEvent) bool { return false },
+		GenericFunc: func(e event.GenericEvent) bool { return false },
+	}
 }
 
 // gatewayToHTTPRoutes maps a Gateway event back to all HTTPRoutes that reference it,

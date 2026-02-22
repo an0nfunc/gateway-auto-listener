@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -699,4 +700,195 @@ func TestReconcile_NotFound(t *testing.T) {
 	if result.RequeueAfter != 0 {
 		t.Error("should not requeue for not-found")
 	}
+}
+
+func TestNamespaceToHTTPRoutes_EnqueuesManagedRoutes(t *testing.T) {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "tenant-abc",
+			Annotations: map[string]string{
+				"gateway-auto-listener/allowed-hostnames": "custom.org",
+			},
+		},
+	}
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "nginx-gateway"},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "nginx",
+			Listeners:        []gatewayv1.Listener{},
+		},
+	}
+	managedRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "managed-route",
+			Namespace:  "tenant-abc",
+			Finalizers: []string{finalizerName},
+			Annotations: map[string]string{
+				"cert-manager.io/cluster-issuer": "letsencrypt",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"app.custom.org"},
+		},
+	}
+	unmanagedRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "unmanaged-route",
+			Namespace: "tenant-abc",
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"other.example.com"},
+		},
+	}
+	otherNSRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "other-ns-route",
+			Namespace:  "tenant-xyz",
+			Finalizers: []string{finalizerName},
+			Annotations: map[string]string{
+				"cert-manager.io/cluster-issuer": "letsencrypt",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"app.other.com"},
+		},
+	}
+
+	r := newReconciler(ns, gateway, managedRoute, unmanagedRoute, otherNSRoute)
+	ctx := context.Background()
+
+	requests := r.namespaceToHTTPRoutes(ctx, ns)
+
+	if len(requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(requests))
+	}
+	if requests[0].Name != "managed-route" || requests[0].Namespace != "tenant-abc" {
+		t.Errorf("expected managed-route in tenant-abc, got %s/%s", requests[0].Namespace, requests[0].Name)
+	}
+}
+
+func TestNamespaceToHTTPRoutes_SkipsNonMatchingPrefix(t *testing.T) {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "kube-system",
+			Annotations: map[string]string{
+				"gateway-auto-listener/allowed-hostnames": "something.com",
+			},
+		},
+	}
+
+	r := newReconciler(ns)
+	ctx := context.Background()
+
+	requests := r.namespaceToHTTPRoutes(ctx, ns)
+
+	if len(requests) != 0 {
+		t.Errorf("expected 0 requests for non-matching prefix, got %d", len(requests))
+	}
+}
+
+func TestNamespaceAnnotationChanged_Predicate(t *testing.T) {
+	r := newReconciler()
+	pred := r.namespaceAnnotationChanged()
+
+	t.Run("create with annotation", func(t *testing.T) {
+		e := event.CreateEvent{
+			Object: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "tenant-new",
+					Annotations: map[string]string{
+						"gateway-auto-listener/allowed-hostnames": "example.com",
+					},
+				},
+			},
+		}
+		if !pred.Create(e) {
+			t.Error("expected create with annotation to return true")
+		}
+	})
+
+	t.Run("create without annotation", func(t *testing.T) {
+		e := event.CreateEvent{
+			Object: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "tenant-plain"},
+			},
+		}
+		if pred.Create(e) {
+			t.Error("expected create without annotation to return false")
+		}
+	})
+
+	t.Run("update annotation changed", func(t *testing.T) {
+		e := event.UpdateEvent{
+			ObjectOld: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "tenant-x",
+					Annotations: map[string]string{
+						"gateway-auto-listener/allowed-hostnames": "old.com",
+					},
+				},
+			},
+			ObjectNew: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "tenant-x",
+					Annotations: map[string]string{
+						"gateway-auto-listener/allowed-hostnames": "new.com",
+					},
+				},
+			},
+		}
+		if !pred.Update(e) {
+			t.Error("expected update with changed annotation to return true")
+		}
+	})
+
+	t.Run("update annotation added", func(t *testing.T) {
+		e := event.UpdateEvent{
+			ObjectOld: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "tenant-x"},
+			},
+			ObjectNew: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "tenant-x",
+					Annotations: map[string]string{
+						"gateway-auto-listener/allowed-hostnames": "new.com",
+					},
+				},
+			},
+		}
+		if !pred.Update(e) {
+			t.Error("expected update with added annotation to return true")
+		}
+	})
+
+	t.Run("update unrelated change", func(t *testing.T) {
+		e := event.UpdateEvent{
+			ObjectOld: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "tenant-x",
+					Labels: map[string]string{"foo": "bar"},
+				},
+			},
+			ObjectNew: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   "tenant-x",
+					Labels: map[string]string{"foo": "baz"},
+				},
+			},
+		}
+		if pred.Update(e) {
+			t.Error("expected update without annotation change to return false")
+		}
+	})
+
+	t.Run("delete returns false", func(t *testing.T) {
+		e := event.DeleteEvent{
+			Object: &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "tenant-gone"},
+			},
+		}
+		if pred.Delete(e) {
+			t.Error("expected delete to return false")
+		}
+	})
 }
