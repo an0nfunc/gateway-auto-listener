@@ -28,7 +28,7 @@ Requires [golangci-lint](https://golangci-lint.run/usage/install/).
 
 1. Fork the repository and create a feature branch from `main`.
 2. Ensure all tests pass and linting is clean.
-3. Write a clear commit message describing the change.
+3. Write a clear commit message using [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `chore:`, etc.).
 4. Open a PR against `main` with a description of what and why.
 5. Address review feedback.
 
