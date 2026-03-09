@@ -275,6 +275,18 @@ func TestReconcile_CreatesListener(t *testing.T) {
 	if string(listener.TLS.CertificateRefs[0].Name) != "test-example-com-tls" {
 		t.Errorf("expected secret name 'test-example-com-tls', got %q", listener.TLS.CertificateRefs[0].Name)
 	}
+	if listener.AllowedRoutes == nil || listener.AllowedRoutes.Namespaces == nil {
+		t.Fatal("expected AllowedRoutes with namespace config")
+	}
+	if *listener.AllowedRoutes.Namespaces.From != gatewayv1.NamespacesFromSelector {
+		t.Errorf("expected NamespacesFromSelector, got %s", *listener.AllowedRoutes.Namespaces.From)
+	}
+	if listener.AllowedRoutes.Namespaces.Selector == nil {
+		t.Fatal("expected namespace selector")
+	}
+	if listener.AllowedRoutes.Namespaces.Selector.MatchLabels["kubernetes.io/metadata.name"] != "default" {
+		t.Errorf("expected namespace selector for 'default', got %v", listener.AllowedRoutes.Namespaces.Selector.MatchLabels)
+	}
 
 	// Verify finalizer was added
 	var route gatewayv1.HTTPRoute

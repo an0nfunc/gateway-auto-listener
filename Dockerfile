@@ -7,7 +7,7 @@ COPY . .
 ARG VERSION=dev
 RUN go build -buildmode=pie -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o gateway-auto-listener ./cmd/gateway-auto-listener
 
-FROM alpine:latest
+FROM alpine:3
 RUN apk add --no-cache ca-certificates
 WORKDIR /
 COPY --from=builder /app/gateway-auto-listener .

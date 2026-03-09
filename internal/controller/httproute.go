@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -122,7 +123,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	if err := r.reconcileListeners(ctx, &httpRoute); err != nil {
+	if err := r.reconcileListeners(ctx, &httpRoute, httpRoute.Namespace); err != nil {
 		log.Error(err, "failed to reconcile listeners")
 		return ctrl.Result{}, err
 	}
@@ -130,7 +131,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, nil
 }
 
-func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute *gatewayv1.HTTPRoute) error {
+func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute *gatewayv1.HTTPRoute, routeNamespace string) error {
 	log := log.FromContext(ctx)
 
 	var gateway gatewayv1.Gateway
@@ -176,6 +177,7 @@ func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute 
 
 	// Add new listeners
 	var added int
+	allowFrom := gatewayv1.NamespacesFromSelector
 	for _, hostname := range httpRoute.Spec.Hostnames {
 		if err := r.validateHostname(ctx, string(hostname), httpRoute.Namespace); err != nil {
 			log.Error(err, "hostname validation failed", "hostname", hostname)
@@ -190,6 +192,22 @@ func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute 
 			continue
 		}
 		if existingListeners[listenerName] && previousListeners[listenerName] {
+			// Update existing managed listener (e.g., namespace restriction change)
+			for i, l := range newGWListeners {
+				if string(l.Name) == listenerName {
+					newGWListeners[i].AllowedRoutes = &gatewayv1.AllowedRoutes{
+						Namespaces: &gatewayv1.RouteNamespaces{
+							From: &allowFrom,
+							Selector: &metav1.LabelSelector{
+								MatchLabels: map[string]string{
+									"kubernetes.io/metadata.name": routeNamespace,
+								},
+							},
+						},
+					}
+					break
+				}
+			}
 			continue
 		}
 
@@ -197,8 +215,6 @@ func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute 
 		ns := gatewayv1.Namespace(r.GatewayNamespace)
 		hostnameVal := gatewayv1.Hostname(hostname)
 		tlsMode := gatewayv1.TLSModeTerminate
-		allowAll := gatewayv1.NamespacesFromAll
-
 		listener := gatewayv1.Listener{
 			Name:     gatewayv1.SectionName(listenerName),
 			Hostname: &hostnameVal,
@@ -206,7 +222,12 @@ func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute 
 			Protocol: gatewayv1.HTTPSProtocolType,
 			AllowedRoutes: &gatewayv1.AllowedRoutes{
 				Namespaces: &gatewayv1.RouteNamespaces{
-					From: &allowAll,
+					From: &allowFrom,
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"kubernetes.io/metadata.name": routeNamespace,
+						},
+					},
 				},
 			},
 			TLS: &gatewayv1.ListenerTLSConfig{
