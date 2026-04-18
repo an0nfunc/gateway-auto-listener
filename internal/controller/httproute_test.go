@@ -68,6 +68,15 @@ func TestHostnameToSecretName(t *testing.T) {
 	}
 }
 
+// parentRefsToDefault returns ParentRefs pointing at the managed Gateway used in test setups.
+// Tests must include this so the reconciler's ParentRefs check accepts the route.
+func parentRefsToDefault() []gatewayv1.ParentReference {
+	ns := gatewayv1.Namespace("nginx-gateway")
+	return []gatewayv1.ParentReference{
+		{Name: gatewayv1.ObjectName("default"), Namespace: &ns},
+	}
+}
+
 func newReconciler(objs ...client.Object) *HTTPRouteReconciler {
 	cb := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(objs...)
 	cb = cb.WithStatusSubresource(objs...)
@@ -187,7 +196,8 @@ func TestReconcile_SkipWithoutAnnotation(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"test.example.com"},
+			Hostnames:       []gatewayv1.Hostname{"test.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 
@@ -229,7 +239,8 @@ func TestReconcile_CreatesListener(t *testing.T) {
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"test.example.com"},
+			Hostnames:       []gatewayv1.Hostname{"test.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 
@@ -313,7 +324,8 @@ func TestReconcile_IssuerAnnotation(t *testing.T) {
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"test.example.com"},
+			Hostnames:       []gatewayv1.Hostname{"test.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 
@@ -342,7 +354,15 @@ func TestReconcile_DeleteRemovesListener(t *testing.T) {
 	allowAll := gatewayv1.NamespacesFromAll
 
 	gateway := &gatewayv1.Gateway{
-		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "nginx-gateway"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default",
+			Namespace: "nginx-gateway",
+			// Pre-existing owner annotation: this listener was claimed by test-route in a
+			// prior reconcile. Deletion of the route should release ownership and remove it.
+			Annotations: map[string]string{
+				ownerAnnotationPrefix + "https-test-example-com": "default/test-route",
+			},
+		},
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "nginx",
 			Listeners: []gatewayv1.Listener{
@@ -377,7 +397,8 @@ func TestReconcile_DeleteRemovesListener(t *testing.T) {
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"test.example.com"},
+			Hostnames:       []gatewayv1.Hostname{"test.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 
@@ -396,6 +417,9 @@ func TestReconcile_DeleteRemovesListener(t *testing.T) {
 
 	if len(gw.Spec.Listeners) != 0 {
 		t.Errorf("expected 0 listeners after deletion, got %d", len(gw.Spec.Listeners))
+	}
+	if _, present := gw.Annotations[ownerAnnotationPrefix+"https-test-example-com"]; present {
+		t.Errorf("expected owner annotation to be released on deletion, but it persists")
 	}
 }
 
@@ -416,7 +440,8 @@ func TestReconcile_MultipleHostnames(t *testing.T) {
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"one.example.com", "two.example.com"},
+			Hostnames:       []gatewayv1.Hostname{"one.example.com", "two.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 
@@ -492,7 +517,8 @@ func TestReconcile_HostnameChangeRemovesOldListener(t *testing.T) {
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"new.example.com"},
+			Hostnames:       []gatewayv1.Hostname{"new.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 
@@ -517,11 +543,21 @@ func TestReconcile_HostnameChangeRemovesOldListener(t *testing.T) {
 		t.Errorf("expected listener 'https-new-example-com', got %q", gw.Spec.Listeners[0].Name)
 	}
 
-	// Verify annotation was updated
+	// Ownership should be tracked on the Gateway, not on the route.
+	expectedOwner := "default/test-route"
+	if gw.Annotations[ownerAnnotationPrefix+"https-new-example-com"] != expectedOwner {
+		t.Errorf("expected owner annotation for new listener, got %q",
+			gw.Annotations[ownerAnnotationPrefix+"https-new-example-com"])
+	}
+	if _, ok := gw.Annotations[ownerAnnotationPrefix+"https-old-example-com"]; ok {
+		t.Errorf("expected owner annotation for old listener to be released, but it's still present")
+	}
+
+	// Legacy route-side annotation should be stripped after migration.
 	var route gatewayv1.HTTPRoute
 	_ = r.Get(ctx, types.NamespacedName{Name: "test-route", Namespace: "default"}, &route)
-	if route.Annotations[managedHostnamesAnnotation] != "https-new-example-com" {
-		t.Errorf("expected annotation 'https-new-example-com', got %q", route.Annotations[managedHostnamesAnnotation])
+	if v, ok := route.Annotations[managedHostnamesAnnotation]; ok {
+		t.Errorf("legacy managed-hostnames annotation should have been removed, still present: %q", v)
 	}
 }
 
@@ -545,7 +581,8 @@ func TestReconcile_BootstrapSetsAnnotation(t *testing.T) {
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"example.com"},
+			Hostnames:       []gatewayv1.Hostname{"example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 
@@ -559,11 +596,11 @@ func TestReconcile_BootstrapSetsAnnotation(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Annotation should be set after first reconcile
-	var route gatewayv1.HTTPRoute
-	_ = r.Get(ctx, types.NamespacedName{Name: "test-route", Namespace: "default"}, &route)
-	if route.Annotations[managedHostnamesAnnotation] != "https-example-com" {
-		t.Errorf("expected annotation 'https-example-com', got %q", route.Annotations[managedHostnamesAnnotation])
+	// Owner annotation should be set on the Gateway after first reconcile.
+	var gw gatewayv1.Gateway
+	_ = r.Get(ctx, types.NamespacedName{Name: "default", Namespace: "nginx-gateway"}, &gw)
+	if got := gw.Annotations[ownerAnnotationPrefix+"https-example-com"]; got != "default/test-route" {
+		t.Errorf("expected owner annotation 'default/test-route', got %q", got)
 	}
 }
 
@@ -608,7 +645,8 @@ func TestReconcile_ManualListenerNotRemoved(t *testing.T) {
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Hostnames:       []gatewayv1.Hostname{"app.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 
@@ -660,7 +698,8 @@ func TestReconcile_DisallowedHostname_RecordsEvent(t *testing.T) {
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"evil.hacker.com"},
+			Hostnames:       []gatewayv1.Hostname{"evil.hacker.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 
@@ -740,7 +779,8 @@ func TestNamespaceToHTTPRoutes_EnqueuesManagedRoutes(t *testing.T) {
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"app.custom.org"},
+			Hostnames:       []gatewayv1.Hostname{"app.custom.org"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 	unmanagedRoute := &gatewayv1.HTTPRoute{
@@ -749,7 +789,8 @@ func TestNamespaceToHTTPRoutes_EnqueuesManagedRoutes(t *testing.T) {
 			Namespace: "tenant-abc",
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"other.example.com"},
+			Hostnames:       []gatewayv1.Hostname{"other.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 	otherNSRoute := &gatewayv1.HTTPRoute{
@@ -762,7 +803,8 @@ func TestNamespaceToHTTPRoutes_EnqueuesManagedRoutes(t *testing.T) {
 			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
-			Hostnames: []gatewayv1.Hostname{"app.other.com"},
+			Hostnames:       []gatewayv1.Hostname{"app.other.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
 		},
 	}
 
@@ -903,4 +945,315 @@ func TestNamespaceAnnotationChanged_Predicate(t *testing.T) {
 			t.Error("expected delete to return false")
 		}
 	})
+}
+
+// TestReconcile_TenantAnnotationCannotDeleteForeignListener verifies the security fix
+// for the cross-tenant listener-deletion bug. A tenant-controlled HTTPRoute that puts
+// a foreign listener name in the legacy managed-hostnames annotation must not cause
+// that listener to be removed.
+func TestReconcile_TenantAnnotationCannotDeleteForeignListener(t *testing.T) {
+	victimHostname := gatewayv1.Hostname("victim.example.com")
+	tlsMode := gatewayv1.TLSModeTerminate
+	allowAll := gatewayv1.NamespacesFromAll
+	ns := gatewayv1.Namespace("nginx-gateway")
+
+	// Pre-existing listener owned by victim-route.
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default",
+			Namespace: "nginx-gateway",
+			Annotations: map[string]string{
+				ownerAnnotationPrefix + "https-victim-example-com": "default/victim-route",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "nginx",
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https-victim-example-com",
+					Hostname: &victimHostname,
+					Port:     443,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					AllowedRoutes: &gatewayv1.AllowedRoutes{
+						Namespaces: &gatewayv1.RouteNamespaces{From: &allowAll},
+					},
+					TLS: &gatewayv1.ListenerTLSConfig{
+						Mode: &tlsMode,
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{Name: "victim-example-com-tls", Namespace: &ns},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Attacker's tenant route claims it previously managed the victim's listener
+	// (legacy annotation forgery) and asks to remove it by not listing the hostname.
+	tenantNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant-attacker"}}
+	attackerRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "attacker-route",
+			Namespace:  "tenant-attacker",
+			Finalizers: []string{finalizerName},
+			Annotations: map[string]string{
+				"cert-manager.io/cluster-issuer":          "letsencrypt",
+				"gateway-auto-listener/managed-hostnames": "https-victim-example-com",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames:       []gatewayv1.Hostname{"app.tenant-attacker.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
+		},
+	}
+
+	r := newReconciler(gateway, attackerRoute, tenantNS)
+	ctx := context.Background()
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "attacker-route", Namespace: "tenant-attacker"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var gw gatewayv1.Gateway
+	_ = r.Get(ctx, types.NamespacedName{Name: "default", Namespace: "nginx-gateway"}, &gw)
+
+	// Victim listener must still be present.
+	found := false
+	for _, l := range gw.Spec.Listeners {
+		if string(l.Name) == "https-victim-example-com" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("victim listener was deleted via tenant-controllable annotation — security regression")
+	}
+
+	// Owner of victim listener must remain victim-route.
+	if got := gw.Annotations[ownerAnnotationPrefix+"https-victim-example-com"]; got != "default/victim-route" {
+		t.Errorf("victim listener ownership changed to %q (expected default/victim-route)", got)
+	}
+}
+
+// TestReconcile_SkipsRouteWithoutManagedGatewayParentRef verifies the controller
+// ignores HTTPRoutes that don't list the managed Gateway as a ParentRef.
+func TestReconcile_SkipsRouteWithoutManagedGatewayParentRef(t *testing.T) {
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "nginx-gateway"},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "nginx",
+			Listeners:        []gatewayv1.Listener{},
+		},
+	}
+	otherGwNS := gatewayv1.Namespace("other-namespace")
+	httpRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "other-route",
+			Namespace: "default",
+			Annotations: map[string]string{
+				"cert-manager.io/cluster-issuer": "letsencrypt",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"unrelated.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{
+					{Name: gatewayv1.ObjectName("other-gateway"), Namespace: &otherGwNS},
+				},
+			},
+		},
+	}
+
+	r := newReconciler(gateway, httpRoute)
+	ctx := context.Background()
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "other-route", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var gw gatewayv1.Gateway
+	_ = r.Get(ctx, types.NamespacedName{Name: "default", Namespace: "nginx-gateway"}, &gw)
+	if len(gw.Spec.Listeners) != 0 {
+		t.Errorf("expected 0 listeners (route doesn't reference managed Gateway), got %d", len(gw.Spec.Listeners))
+	}
+}
+
+// TestRemoveListeners_TenantDeletionCannotRemoveForeignListener guards BLOCKER #1
+// from the implementation review: the finalizer (delete) path must not derive
+// listener names from tenant-writable fields. An attacker route with `Hostnames:
+// [victim]` or with a forged legacy `managed-hostnames` annotation must not cause
+// the victim's listener to be removed when the attacker's route is deleted.
+func TestRemoveListeners_TenantDeletionCannotRemoveForeignListener(t *testing.T) {
+	victimHostname := gatewayv1.Hostname("victim.example.com")
+	tlsMode := gatewayv1.TLSModeTerminate
+	allowAll := gatewayv1.NamespacesFromAll
+	ns := gatewayv1.Namespace("nginx-gateway")
+
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default",
+			Namespace: "nginx-gateway",
+			Annotations: map[string]string{
+				ownerAnnotationPrefix + "https-victim-example-com": "default/victim-route",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "nginx",
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https-victim-example-com",
+					Hostname: &victimHostname,
+					Port:     443,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					AllowedRoutes: &gatewayv1.AllowedRoutes{
+						Namespaces: &gatewayv1.RouteNamespaces{From: &allowAll},
+					},
+					TLS: &gatewayv1.ListenerTLSConfig{
+						Mode: &tlsMode,
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{Name: "victim-example-com-tls", Namespace: &ns},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	now := metav1.NewTime(time.Now())
+	tenantNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant-attacker"}}
+	attackerRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "attacker-route",
+			Namespace:         "tenant-attacker",
+			DeletionTimestamp: &now,
+			Finalizers:        []string{finalizerName},
+			Annotations: map[string]string{
+				"cert-manager.io/cluster-issuer":          "letsencrypt",
+				"gateway-auto-listener/managed-hostnames": "https-victim-example-com",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			// Spec.Hostnames also targets victim — pre-fix code would derive listeners
+			// to remove from this and delete the foreign listener.
+			Hostnames:       []gatewayv1.Hostname{"victim.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
+		},
+	}
+
+	r := newReconciler(gateway, attackerRoute, tenantNS)
+	ctx := context.Background()
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "attacker-route", Namespace: "tenant-attacker"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var gw gatewayv1.Gateway
+	_ = r.Get(ctx, types.NamespacedName{Name: "default", Namespace: "nginx-gateway"}, &gw)
+
+	found := false
+	for _, l := range gw.Spec.Listeners {
+		if string(l.Name) == "https-victim-example-com" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("victim listener was deleted via attacker-route deletion — security regression in removeListeners")
+	}
+	if got := gw.Annotations[ownerAnnotationPrefix+"https-victim-example-com"]; got != "default/victim-route" {
+		t.Errorf("victim ownership annotation changed to %q (expected default/victim-route)", got)
+	}
+}
+
+// TestReconcile_LegacyAnnotationCannotForgeOnUnownedListener guards BLOCKER #2.
+// During the v0.1.x → v0.2.0 migration window, legitimate listeners have no owner
+// annotations yet. A tenant attacker reconciling first with a forged legacy
+// managed-hostnames annotation must not be able to claim a victim hostname's
+// listener even though no owner annotation exists, because the listener's actual
+// hostname fails validateHostname() for the attacker's namespace.
+func TestReconcile_LegacyAnnotationCannotForgeOnUnownedListener(t *testing.T) {
+	victimHostname := gatewayv1.Hostname("victim.example.com")
+	tlsMode := gatewayv1.TLSModeTerminate
+	allowAll := gatewayv1.NamespacesFromAll
+	ns := gatewayv1.Namespace("nginx-gateway")
+
+	// Gateway has the victim listener but NO owner annotation — simulating the
+	// migration window before v0.2.0 has annotated existing listeners.
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "nginx-gateway"},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "nginx",
+			Listeners: []gatewayv1.Listener{
+				{
+					Name:     "https-victim-example-com",
+					Hostname: &victimHostname,
+					Port:     443,
+					Protocol: gatewayv1.HTTPSProtocolType,
+					AllowedRoutes: &gatewayv1.AllowedRoutes{
+						Namespaces: &gatewayv1.RouteNamespaces{From: &allowAll},
+					},
+					TLS: &gatewayv1.ListenerTLSConfig{
+						Mode: &tlsMode,
+						CertificateRefs: []gatewayv1.SecretObjectReference{
+							{Name: "victim-example-com-tls", Namespace: &ns},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tenantNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant-attacker"}}
+	attackerRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "attacker-route",
+			Namespace:  "tenant-attacker",
+			Finalizers: []string{finalizerName},
+			Annotations: map[string]string{
+				"cert-manager.io/cluster-issuer":          "letsencrypt",
+				"gateway-auto-listener/managed-hostnames": "https-victim-example-com",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			// Attacker's own (validation-passing) hostname; legacy-claim is the attack.
+			Hostnames:       []gatewayv1.Hostname{"app.tenant-attacker.example.com"},
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: parentRefsToDefault()},
+		},
+	}
+
+	r := newReconciler(gateway, attackerRoute, tenantNS)
+	ctx := context.Background()
+
+	_, err := r.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "attacker-route", Namespace: "tenant-attacker"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var gw gatewayv1.Gateway
+	_ = r.Get(ctx, types.NamespacedName{Name: "default", Namespace: "nginx-gateway"}, &gw)
+
+	found := false
+	for _, l := range gw.Spec.Listeners {
+		if string(l.Name) == "https-victim-example-com" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("victim listener was claimed/deleted via legacy-annotation forgery on unowned listener")
+	}
+	if got := gw.Annotations[ownerAnnotationPrefix+"https-victim-example-com"]; got != "" {
+		t.Errorf("attacker successfully claimed ownership of victim listener: %q", got)
+	}
 }

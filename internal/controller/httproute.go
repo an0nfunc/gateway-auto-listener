@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -29,7 +28,12 @@ const (
 	issuerAnnotation           = "cert-manager.io/issuer"
 	managedByLabel             = "gateway-auto-listener/managed-by"
 	managedByValue             = "gateway-auto-listener"
-	managedHostnamesAnnotation = "gateway-auto-listener/managed-hostnames"
+	managedHostnamesAnnotation = "gateway-auto-listener/managed-hostnames" // legacy: read for migration only
+	// ownerAnnotationPrefix is applied to the Gateway as `<prefix><listenerName>` and
+	// records "<routeNamespace>/<routeName>" as the canonical owner of that listener.
+	// Replaces the route-local managed-hostnames annotation, which was tenant-writable
+	// and could be exploited to drive cross-tenant listener deletion or rewriting.
+	ownerAnnotationPrefix = "gateway-auto-listener.itsh.dev/owner."
 )
 
 type HTTPRouteReconciler struct {
@@ -101,6 +105,15 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
+	// Skip the ParentRefs check on the deletion path: a tenant might have edited the
+	// route to drop its parentRef before deleting it, and we still need the finalizer
+	// to clean up listeners we own. Ownership is checked inside removeListeners.
+	if httpRoute.DeletionTimestamp.IsZero() && !r.routeReferencesManagedGateway(&httpRoute) {
+		// Route doesn't list our Gateway as a parent; nothing to do.
+		// Prevents creating phantom listeners for routes attached to a different Gateway.
+		return ctrl.Result{}, nil
+	}
+
 	// Handle deletion
 	if !httpRoute.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&httpRoute, finalizerName) {
@@ -147,24 +160,70 @@ func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute 
 		existingListeners[string(l.Name)] = true
 	}
 
-	// Build set of current desired listener names
+	ownerKey := routeOwnerKey(httpRoute.Namespace, httpRoute.Name)
+
+	// Build set of currently-desired listener names (only validated hostnames).
 	currentListeners := make(map[string]bool)
 	for _, hostname := range httpRoute.Spec.Hostnames {
+		if err := r.validateHostname(ctx, string(hostname), httpRoute.Namespace); err != nil {
+			log.Error(err, "hostname validation failed", "hostname", hostname)
+			r.Recorder.Eventf(httpRoute, corev1.EventTypeWarning, "HostnameValidationFailed",
+				"hostname %s not allowed for namespace %s", string(hostname), httpRoute.Namespace)
+			continue
+		}
 		currentListeners[hostnameToListenerName(string(hostname))] = true
 	}
 
-	// Determine previously managed listeners from annotation
-	previousListeners := make(map[string]bool)
-	if prev := httpRoute.Annotations[managedHostnamesAnnotation]; prev != "" {
-		for _, name := range strings.Split(prev, ",") {
-			previousListeners[name] = true
+	// previousListeners are ones the Gateway records as owned by THIS route via its annotations.
+	// Authoritative source — never trusts annotations on the (tenant-writable) HTTPRoute.
+	previousListeners := listenersOwnedBy(&gateway, ownerKey)
+
+	// One-shot legacy migration: if the Gateway has no owner annotation for THIS route AND
+	// the route still carries the legacy managed-hostnames annotation, claim listener names
+	// from that annotation. Two safety gates prevent the original cross-tenant-deletion
+	// attack from being re-introduced through this fallback:
+	//   1. The listener must not already be owned by a different route.
+	//   2. The listener's existing hostname must pass validateHostname() for THIS route's
+	//      namespace. During the v0.1.x → v0.2.0 upgrade window, legitimate listeners have
+	//      no owner annotations yet, so check (1) alone is insufficient — without (2) an
+	//      attacker tenant could race in with a forged legacy annotation and claim
+	//      victim.com because no owner exists yet. validateHostname will reject victim.com
+	//      for tenant-attacker namespace.
+	if len(previousListeners) == 0 {
+		if prev := httpRoute.Annotations[managedHostnamesAnnotation]; prev != "" {
+			listenerByName := make(map[string]*gatewayv1.Listener, len(gateway.Spec.Listeners))
+			for i := range gateway.Spec.Listeners {
+				l := &gateway.Spec.Listeners[i]
+				listenerByName[string(l.Name)] = l
+			}
+			for _, name := range strings.Split(prev, ",") {
+				name = strings.TrimSpace(name)
+				if name == "" {
+					continue
+				}
+				if owner, owned := gateway.Annotations[ownerAnnotationPrefix+name]; owned && owner != ownerKey {
+					log.Info("ignoring legacy managed-hostnames entry: listener owned by another route",
+						"listener", name, "current_owner", owner, "claimant", ownerKey)
+					continue
+				}
+				if l, exists := listenerByName[name]; exists && l.Hostname != nil {
+					if err := r.validateHostname(ctx, string(*l.Hostname), httpRoute.Namespace); err != nil {
+						log.Info("ignoring legacy managed-hostnames entry: hostname not allowed for namespace",
+							"listener", name, "hostname", *l.Hostname, "namespace", httpRoute.Namespace, "reason", err)
+						continue
+					}
+				}
+				previousListeners[name] = true
+			}
 		}
 	}
 
-	// Remove stale listeners (previously managed but no longer desired)
 	gwPatch := client.MergeFrom(gateway.DeepCopy())
-	var removed int
 	var newGWListeners []gatewayv1.Listener
+	var removed, added int
+
+	// Pass 1: walk existing listeners. Drop those owned by this route that are no longer desired.
+	// Listeners owned by other routes (or unowned) are preserved unchanged.
 	for _, l := range gateway.Spec.Listeners {
 		name := string(l.Name)
 		if previousListeners[name] && !currentListeners[name] {
@@ -175,39 +234,17 @@ func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute 
 		newGWListeners = append(newGWListeners, l)
 	}
 
-	// Add new listeners
-	var added int
+	// Pass 2: add new listeners for desired hostnames not already present on the Gateway.
 	allowFrom := gatewayv1.NamespacesFromSelector
 	for _, hostname := range httpRoute.Spec.Hostnames {
 		if err := r.validateHostname(ctx, string(hostname), httpRoute.Namespace); err != nil {
-			log.Error(err, "hostname validation failed", "hostname", hostname)
-			r.Recorder.Eventf(httpRoute, corev1.EventTypeWarning, "HostnameValidationFailed",
-				"hostname %s not allowed for namespace %s", string(hostname), httpRoute.Namespace)
-			continue
+			continue // already logged above
 		}
-
 		listenerName := hostnameToListenerName(string(hostname))
-		if existingListeners[listenerName] && !previousListeners[listenerName] {
-			log.V(1).Info("listener already exists", "listener", listenerName)
-			continue
-		}
-		if existingListeners[listenerName] && previousListeners[listenerName] {
-			// Update existing managed listener (e.g., namespace restriction change)
-			for i, l := range newGWListeners {
-				if string(l.Name) == listenerName {
-					newGWListeners[i].AllowedRoutes = &gatewayv1.AllowedRoutes{
-						Namespaces: &gatewayv1.RouteNamespaces{
-							From: &allowFrom,
-							Selector: &metav1.LabelSelector{
-								MatchLabels: map[string]string{
-									"kubernetes.io/metadata.name": routeNamespace,
-								},
-							},
-						},
-					}
-					break
-				}
-			}
+		if existingListeners[listenerName] {
+			// Listener exists. If owned by another route, leave it alone (cross-tenant safety).
+			// If owned by this route, currentListeners already kept it via Pass 1.
+			// If unowned (legacy), Pass 3 will claim ownership without modifying spec.
 			continue
 		}
 
@@ -245,7 +282,12 @@ func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute 
 		log.Info("adding listener", "listener", listenerName, "hostname", hostname, "secret", secretName)
 	}
 
-	if added > 0 || removed > 0 {
+	// Pass 3: reconcile owner annotations on the Gateway.
+	// Claim listeners we now own (currentListeners ∪ unowned-but-matching), release listeners
+	// we previously owned but no longer desire.
+	annotationsChanged := updateOwnerAnnotations(&gateway, ownerKey, currentListeners, previousListeners)
+
+	if added > 0 || removed > 0 || annotationsChanged {
 		gateway.Spec.Listeners = newGWListeners
 		if gateway.Labels == nil {
 			gateway.Labels = make(map[string]string)
@@ -256,25 +298,94 @@ func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute 
 		}
 	}
 
-	// Update the managed-hostnames annotation on the HTTPRoute
-	var managedNames []string
-	for name := range currentListeners {
-		managedNames = append(managedNames, name)
-	}
-	sort.Strings(managedNames)
-	newAnnotation := strings.Join(managedNames, ",")
-
-	if httpRoute.Annotations[managedHostnamesAnnotation] != newAnnotation {
-		if httpRoute.Annotations == nil {
-			httpRoute.Annotations = make(map[string]string)
-		}
-		httpRoute.Annotations[managedHostnamesAnnotation] = newAnnotation
+	// Strip the legacy managed-hostnames annotation off the route once we've migrated.
+	// Removing it eliminates the tenant-writable surface that drove the original vulnerability.
+	if _, ok := httpRoute.Annotations[managedHostnamesAnnotation]; ok {
+		delete(httpRoute.Annotations, managedHostnamesAnnotation)
 		if err := r.Update(ctx, httpRoute); err != nil {
-			return fmt.Errorf("failed to update httproute annotation: %w", err)
+			return fmt.Errorf("failed to remove legacy managed-hostnames annotation: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// routeOwnerKey returns the canonical "namespace/name" string used as ownership annotation value.
+func routeOwnerKey(namespace, name string) string {
+	return namespace + "/" + name
+}
+
+// listenersOwnedBy returns the set of listener names whose owner annotation matches ownerKey.
+func listenersOwnedBy(gw *gatewayv1.Gateway, ownerKey string) map[string]bool {
+	out := make(map[string]bool)
+	for k, v := range gw.Annotations {
+		if !strings.HasPrefix(k, ownerAnnotationPrefix) {
+			continue
+		}
+		if v == ownerKey {
+			out[strings.TrimPrefix(k, ownerAnnotationPrefix)] = true
+		}
+	}
+	return out
+}
+
+// updateOwnerAnnotations adjusts the Gateway's owner annotations so the union of
+// (currentListeners) is claimed for ownerKey, and any listener formerly owned by ownerKey
+// but no longer in currentListeners is released. Returns true if annotations changed.
+func updateOwnerAnnotations(gw *gatewayv1.Gateway, ownerKey string, currentListeners, previousListeners map[string]bool) bool {
+	if gw.Annotations == nil {
+		gw.Annotations = make(map[string]string)
+	}
+	changed := false
+
+	for name := range currentListeners {
+		key := ownerAnnotationPrefix + name
+		existing, present := gw.Annotations[key]
+		if !present {
+			gw.Annotations[key] = ownerKey
+			changed = true
+			continue
+		}
+		if existing != ownerKey {
+			// Owned by another route. Don't steal — current behavior is "first owner wins".
+			continue
+		}
+	}
+
+	for name := range previousListeners {
+		if currentListeners[name] {
+			continue
+		}
+		key := ownerAnnotationPrefix + name
+		if existing, present := gw.Annotations[key]; present && existing == ownerKey {
+			delete(gw.Annotations, key)
+			changed = true
+		}
+	}
+
+	return changed
+}
+
+// routeReferencesManagedGateway returns true if the HTTPRoute has at least one ParentRef
+// pointing at the Gateway this controller manages. Routes attached to other Gateways are
+// ignored to prevent the controller from creating phantom listeners on this Gateway based
+// solely on a cert-manager annotation.
+func (r *HTTPRouteReconciler) routeReferencesManagedGateway(httpRoute *gatewayv1.HTTPRoute) bool {
+	for _, p := range httpRoute.Spec.ParentRefs {
+		if string(p.Name) != r.GatewayName {
+			continue
+		}
+		// Default to route's namespace when ParentRef.Namespace is unset.
+		ns := httpRoute.Namespace
+		if p.Namespace != nil && *p.Namespace != "" {
+			ns = string(*p.Namespace)
+		}
+		if ns != r.GatewayNamespace {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (r *HTTPRouteReconciler) removeListeners(ctx context.Context, httpRoute *gatewayv1.HTTPRoute) error {
@@ -288,16 +399,14 @@ func (r *HTTPRouteReconciler) removeListeners(ctx context.Context, httpRoute *ga
 		return client.IgnoreNotFound(err)
 	}
 
-	listenersToRemove := make(map[string]bool)
-	// Include current hostnames
-	for _, hostname := range httpRoute.Spec.Hostnames {
-		listenersToRemove[hostnameToListenerName(string(hostname))] = true
-	}
-	// Include previously managed hostnames from annotation
-	if prev := httpRoute.Annotations[managedHostnamesAnnotation]; prev != "" {
-		for _, name := range strings.Split(prev, ",") {
-			listenersToRemove[name] = true
-		}
+	// Only remove listeners we actually own — derive the set from the Gateway's owner
+	// annotations, never from tenant-writable fields on the HTTPRoute. The route's
+	// Spec.Hostnames and the legacy managed-hostnames annotation are tenant-controllable
+	// and were the original cross-tenant deletion vector.
+	ownerKey := routeOwnerKey(httpRoute.Namespace, httpRoute.Name)
+	listenersToRemove := listenersOwnedBy(&gateway, ownerKey)
+	if len(listenersToRemove) == 0 {
+		return nil
 	}
 
 	patch := client.MergeFrom(gateway.DeepCopy())
@@ -311,11 +420,24 @@ func (r *HTTPRouteReconciler) removeListeners(ctx context.Context, httpRoute *ga
 		newListeners = append(newListeners, l)
 	}
 
-	if len(newListeners) == len(gateway.Spec.Listeners) {
-		return nil
+	// Release the owner annotations alongside listener removal. Do this before the
+	// listener-count guard so orphan annotations (listeners removed externally) get
+	// cleaned up too.
+	annotationsRemoved := false
+	for name := range listenersToRemove {
+		if _, present := gateway.Annotations[ownerAnnotationPrefix+name]; present {
+			delete(gateway.Annotations, ownerAnnotationPrefix+name)
+			annotationsRemoved = true
+		}
 	}
 
-	gateway.Spec.Listeners = newListeners
+	listenersChanged := len(newListeners) != len(gateway.Spec.Listeners)
+	if !listenersChanged && !annotationsRemoved {
+		return nil
+	}
+	if listenersChanged {
+		gateway.Spec.Listeners = newListeners
+	}
 	if err := r.Patch(ctx, &gateway, patch); err != nil {
 		return fmt.Errorf("failed to patch gateway: %w", err)
 	}

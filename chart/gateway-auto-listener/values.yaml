@@ -13,8 +13,11 @@ gateway:
   name: default
   namespace: nginx-gateway
 
+# Hostname validation gates which hostnames a route in a namespace is allowed to claim.
+# Strongly recommended in multi-tenant clusters. Default enabled as of chart v0.2.0;
+# set enabled=false explicitly if you trust every namespace to claim any hostname.
 hostnameValidation:
-  enabled: false
+  enabled: true
   namespacePrefix: "tenant-"
   domainSuffix: ""
   hostnamesAnnotation: "gateway-auto-listener/allowed-hostnames"
