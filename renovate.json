@@ -2,5 +2,19 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "platformAutomerge": true,
+  "packageRules": [
+    {
+      "description": "Auto-merge patch and minor updates once CI passes; hold majors for manual review.",
+      "matchUpdateTypes": ["patch", "minor", "digest", "pin", "pinDigest"],
+      "automerge": true
+    },
+    {
+      "description": "Major bumps need a human (breaking changes likely).",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "addLabels": ["needs-review"]
+    }
   ]
 }
