@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.1
+
+- Bump Go toolchain to 1.25.9 to pick up stdlib fixes for GO-2026-4870
+  (TLS 1.3 KeyUpdate DoS), GO-2026-4946 (x509 inefficient policy
+  validation), and GO-2026-4947 (x509 chain-building work). v0.2.0 was
+  built with go 1.25.8 and tripped govulncheck in CI.
+
 ## v0.2.0
 
 ### Security
