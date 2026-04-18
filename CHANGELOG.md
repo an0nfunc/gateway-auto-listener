@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.2
+
+- Migrated from the deprecated `record.EventRecorder` to the new
+  `k8s.io/client-go/tools/events.EventRecorder` (controller-runtime
+  v0.23 ships both; the old API was deprecation-warned by staticcheck).
+  Code change is a no-op for chart consumers, but the chart ClusterRole
+  now also grants `events.k8s.io/events: create,patch` alongside the
+  legacy core `events` grant. `helm upgrade` adds the new permission
+  automatically.
+
 ## v0.2.1
 
 - Bump Go toolchain to 1.25.9 to pick up stdlib fixes for GO-2026-4870
