@@ -9,7 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,7 +39,7 @@ const (
 type HTTPRouteReconciler struct {
 	client.Client
 	Scheme                     *runtime.Scheme
-	Recorder                   record.EventRecorder
+	Recorder                   events.EventRecorder
 	GatewayName                string
 	GatewayNamespace           string
 	AllowedDomainSuffix        string
@@ -167,7 +167,7 @@ func (r *HTTPRouteReconciler) reconcileListeners(ctx context.Context, httpRoute 
 	for _, hostname := range httpRoute.Spec.Hostnames {
 		if err := r.validateHostname(ctx, string(hostname), httpRoute.Namespace); err != nil {
 			log.Error(err, "hostname validation failed", "hostname", hostname)
-			r.Recorder.Eventf(httpRoute, corev1.EventTypeWarning, "HostnameValidationFailed",
+			r.Recorder.Eventf(httpRoute, nil, corev1.EventTypeWarning, "HostnameValidationFailed", "Reject",
 				"hostname %s not allowed for namespace %s", string(hostname), httpRoute.Namespace)
 			continue
 		}

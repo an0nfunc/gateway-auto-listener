@@ -2,14 +2,15 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -17,6 +18,25 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
+
+// fakeEventRecorder satisfies the events.EventRecorder interface for tests.
+// k8s.io/client-go/tools/events doesn't ship a stub equivalent to
+// record.NewFakeRecorder, so we provide a minimal channel-based one.
+type fakeEventRecorder struct {
+	Events chan string
+}
+
+func newFakeEventRecorder(buf int) *fakeEventRecorder {
+	return &fakeEventRecorder{Events: make(chan string, buf)}
+}
+
+func (f *fakeEventRecorder) Eventf(_, _ runtime.Object, eventtype, reason, action, note string, args ...interface{}) {
+	msg := fmt.Sprintf("%s %s %s: "+note, append([]interface{}{eventtype, reason, action}, args...)...)
+	select {
+	case f.Events <- msg:
+	default:
+	}
+}
 
 func init() {
 	_ = gatewayv1.Install(scheme.Scheme)
@@ -84,7 +104,7 @@ func newReconciler(objs ...client.Object) *HTTPRouteReconciler {
 	return &HTTPRouteReconciler{
 		Client:                     cb.Build(),
 		Scheme:                     scheme.Scheme,
-		Recorder:                   record.NewFakeRecorder(10),
+		Recorder:                   newFakeEventRecorder(10),
 		GatewayName:                "default",
 		GatewayNamespace:           "nginx-gateway",
 		AllowedDomainSuffix:        "example.com",
@@ -704,7 +724,7 @@ func TestReconcile_DisallowedHostname_RecordsEvent(t *testing.T) {
 	}
 
 	r := newReconciler(ns, gateway, httpRoute)
-	fakeRecorder := record.NewFakeRecorder(10)
+	fakeRecorder := newFakeEventRecorder(10)
 	r.Recorder = fakeRecorder
 	ctx := context.Background()
 

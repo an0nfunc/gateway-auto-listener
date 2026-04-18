@@ -14,7 +14,14 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get", "list", "watch"]
+  # Events: keep both apiGroups for now. controller-runtime v0.23 switched to
+  # the events.k8s.io API; the empty apiGroup is retained for backwards-compat
+  # with any tooling still reading core events. Drop the core grant once we're
+  # certain nothing relies on it.
   - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
     resources: ["events"]
     verbs: ["create", "patch"]
   - apiGroups: ["coordination.k8s.io"]
