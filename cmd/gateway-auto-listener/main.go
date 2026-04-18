@@ -75,9 +75,13 @@ func main() {
 	}
 
 	if err = (&controller.HTTPRouteReconciler{
-		Client:                     mgr.GetClient(),
-		Scheme:                     mgr.GetScheme(),
-		Recorder:                   mgr.GetEventRecorderFor("gateway-auto-listener"),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// TODO: migrate to mgr.GetEventRecorder + k8s.io/client-go/tools/events when
+		// controller-runtime drops the deprecated record.EventRecorder API. The new
+		// events.k8s.io recorder has a different Eventf signature (regarding/related/action),
+		// so the migration is a small but breaking refactor — postponed.
+		Recorder:                   mgr.GetEventRecorderFor("gateway-auto-listener"), //nolint:staticcheck // SA1019: see TODO above
 		GatewayName:                gatewayName,
 		GatewayNamespace:           gatewayNamespace,
 		AllowedDomainSuffix:        allowedDomainSuffix,
