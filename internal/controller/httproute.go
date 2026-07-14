@@ -83,6 +83,23 @@ func (r *HTTPRouteReconciler) validateHostname(ctx context.Context, hostname, na
 		if allowedHostnames != "" {
 			for _, allowed := range strings.Split(allowedHostnames, ",") {
 				allowed = strings.TrimSpace(allowed)
+				if allowed == "" {
+					continue
+				}
+				// A "*.apex" entry allows any hostname strictly below apex, not
+				// apex itself. Malformed entries ("*", "*foo.bar", "*..", "*.*.foo")
+				// match nothing. The apex checks don't rely on CRD hostname
+				// validation so the matcher fails closed on its own.
+				if apex, isWildcard := strings.CutPrefix(allowed, "*."); isWildcard {
+					if apex == "" || strings.HasPrefix(apex, ".") ||
+						strings.Contains(apex, "..") || strings.ContainsAny(apex, "* ") {
+						continue
+					}
+					if strings.HasSuffix(hostname, "."+apex) {
+						return nil
+					}
+					continue
+				}
 				if hostname == allowed || strings.HasSuffix(hostname, "."+allowed) {
 					return nil
 				}
