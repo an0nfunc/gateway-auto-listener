@@ -189,6 +189,79 @@ func TestValidateHostname_CustomDomains(t *testing.T) {
 	}
 }
 
+func TestValidateHostname_WildcardEntries(t *testing.T) {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "tenant-321",
+			Annotations: map[string]string{
+				"gateway-auto-listener/allowed-hostnames": "*.tenant-321.apps.example.org, plain.org",
+			},
+		},
+	}
+	r := newReconciler(ns)
+	ctx := context.Background()
+
+	// Subdomain covered by wildcard entry
+	err := r.validateHostname(ctx, "app.tenant-321.apps.example.org", "tenant-321")
+	if err != nil {
+		t.Errorf("hostname under wildcard entry should be allowed, got: %v", err)
+	}
+
+	// Deeper subdomains are covered too
+	err = r.validateHostname(ctx, "a.b.tenant-321.apps.example.org", "tenant-321")
+	if err != nil {
+		t.Errorf("nested subdomain under wildcard entry should be allowed, got: %v", err)
+	}
+
+	// The wildcard's apex itself is NOT covered
+	err = r.validateHostname(ctx, "tenant-321.apps.example.org", "tenant-321")
+	if err == nil {
+		t.Error("wildcard entry must not match its apex")
+	}
+
+	// Suffix match must be label-aligned
+	err = r.validateHostname(ctx, "evil-tenant-321.apps.example.org", "tenant-321")
+	if err == nil {
+		t.Error("hostname merely ending in the apex string must be rejected")
+	}
+
+	// Plain entries in the same annotation still work
+	err = r.validateHostname(ctx, "plain.org", "tenant-321")
+	if err != nil {
+		t.Errorf("plain entry alongside wildcard should be allowed, got: %v", err)
+	}
+
+	// Wildcard HTTPRoute hostnames below the apex are covered (they drive
+	// wildcard listener/cert creation and must stay within the entry's grant)
+	err = r.validateHostname(ctx, "*.tenant-321.apps.example.org", "tenant-321")
+	if err != nil {
+		t.Errorf("wildcard hostname under wildcard entry should be allowed, got: %v", err)
+	}
+	err = r.validateHostname(ctx, "*.x.tenant-321.apps.example.org", "tenant-321")
+	if err != nil {
+		t.Errorf("nested wildcard hostname under wildcard entry should be allowed, got: %v", err)
+	}
+}
+
+func TestValidateHostname_MalformedWildcardEntriesFailClosed(t *testing.T) {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "tenant-321",
+			Annotations: map[string]string{
+				"gateway-auto-listener/allowed-hostnames": "*foo.example.org, *., *, *.., *.*.example.org, *. example.org, ,",
+			},
+		},
+	}
+	r := newReconciler(ns)
+	ctx := context.Background()
+
+	for _, hostname := range []string{"foo.example.org", "bar.foo.example.org", "anything.at.all"} {
+		if err := r.validateHostname(ctx, hostname, "tenant-321"); err == nil {
+			t.Errorf("malformed wildcard entries must not allow %q", hostname)
+		}
+	}
+}
+
 func TestValidateHostname_EmptyAllowedDomainSuffix(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "tenant-789"}}
 	r := newReconciler(ns)

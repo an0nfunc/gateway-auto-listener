@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.3
+
+- The allowed-hostnames namespace annotation now supports `*.apex`
+  wildcard entries: such an entry allows any hostname strictly below
+  `apex` (the apex itself is not matched). Malformed or empty entries
+  (`*`, `*.`, `*foo.bar`, `*..`) match nothing and fail closed.
+  Previously a wildcard entry was compared literally, so it only
+  matched the wildcard hostname `*.apex` itself — concrete hostnames
+  below the apex were rejected.
+
 ## v0.2.2
 
 - Migrated from the deprecated `record.EventRecorder` to the new

@@ -131,7 +131,7 @@ See [values.yaml](chart/gateway-auto-listener/values.yaml) for all available Hel
 When `--validated-ns-prefix` is set (e.g., `tenant-`), namespaces matching that prefix are subject to hostname validation:
 
 1. **Default subdomain**: `<anything>.<namespace>.<domain-suffix>` is always allowed (when `--allowed-domain-suffix` is set).
-2. **Custom domains**: Listed in the namespace annotation (comma-separated). Subdomains are also allowed.
+2. **Custom domains**: Listed in the namespace annotation (comma-separated). Subdomains are also allowed. A `*.apex` entry allows any hostname strictly below `apex` (not `apex` itself); malformed wildcard entries (`*`, `*foo.bar`) match nothing.
 
 ```yaml
 apiVersion: v1
@@ -139,7 +139,7 @@ kind: Namespace
 metadata:
   name: tenant-acme
   annotations:
-    gateway-auto-listener/allowed-hostnames: "acme.com, shop.acme.org"
+    gateway-auto-listener/allowed-hostnames: "acme.com, shop.acme.org, *.staging.acme.org"
 ```
 
 Namespaces not matching the prefix can use any hostname.
