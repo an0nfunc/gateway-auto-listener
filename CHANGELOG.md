@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.4
+
+- Dependency updates: controller-runtime v0.24.1, k8s.io v0.36.2,
+  gateway-api v1.6.0, actions/checkout v7. Go toolchain pinned to
+  1.26.5 and golang.org/x/net bumped to v0.55.0 to clear govulncheck
+  findings (GO-2026-5856, GO-2026-5039, GO-2026-5038, GO-2026-5037,
+  GO-2026-5026).
+- Note: the v0.2.3 tag exists but produced no release artifacts (CI
+  failed on the govulncheck findings above before building). v0.2.4 is
+  the first release shipping the wildcard allowed-hostnames support
+  listed under v0.2.3.
+
 ## v0.2.3
 
 - The allowed-hostnames namespace annotation now supports `*.apex`
