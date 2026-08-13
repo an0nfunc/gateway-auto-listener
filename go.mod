@@ -2,7 +2,7 @@ module github.com/an0nfunc/gateway-auto-listener
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.6
 
 require (
 	k8s.io/api v0.36.2
