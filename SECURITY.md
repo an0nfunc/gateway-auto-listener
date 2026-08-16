@@ -8,7 +8,7 @@ If you discover a security vulnerability in gateway-auto-listener, please report
 
 Instead, please send a report via GitHub's private vulnerability reporting feature:
 
-1. Go to the [Security tab](https://github.com/an0nfunc/gateway-auto-listener/security) of this repository.
+1. Go to the [Security tab](https://github.com/itsh-cloud/gateway-auto-listener/security) of this repository.
 2. Click "Report a vulnerability".
 3. Provide a description of the vulnerability and steps to reproduce.
 

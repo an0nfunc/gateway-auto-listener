@@ -1,4 +1,4 @@
-image := env("IMAGE", "ghcr.io/an0nfunc/gateway-auto-listener")
+image := env("IMAGE", "ghcr.io/itsh-cloud/gateway-auto-listener")
 version := `git describe --tags --always --dirty 2>/dev/null || echo "dev"`
 
 default:

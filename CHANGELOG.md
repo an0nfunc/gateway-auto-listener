@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.2.5
+
+- The project moved from `an0nfunc` to the `itsh-cloud` organisation. A GitHub
+  transfer redirects the repository and the git remote, but it does **not** move
+  GHCR packages, so `ghcr.io/an0nfunc/gateway-auto-listener` is frozen at v0.2.4
+  and will never receive another version. Update your references:
+  - Image: `ghcr.io/itsh-cloud/gateway-auto-listener`
+  - Chart: `oci://ghcr.io/itsh-cloud/charts/gateway-auto-listener`
+  - Module: `go install github.com/itsh-cloud/gateway-auto-listener/cmd/gateway-auto-listener@latest`
+- **Breaking:** the leader election lease is renamed from
+  `gateway-auto-listener.an0nfunc.github.io` to `gateway-auto-listener.itsh.dev`.
+  Pods on either side of the rename do not see each other's lease, so a rolling
+  update leaves two active leaders reconciling the same Gateway.
+
+  **Migration:** scale the deployment to 0, wait for the old lease to expire,
+  then roll out v0.2.5. If you run under a GitOps controller with self-heal,
+  set the replica count to 0 through the controller rather than with
+  `kubectl scale`, which will simply be reverted.
+- The chart is now actually published by CI. Earlier versions documented a Helm
+  OCI install that no release ever pushed, so `helm install` from the registry
+  could only fail. Releases also fail fast if `Chart.yaml` and the tag disagree.
+- Dependency update: gateway-api v1.6.1.
+
 ## v0.2.4
 
 - Dependency updates: controller-runtime v0.24.1, k8s.io v0.36.2,

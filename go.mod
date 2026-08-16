@@ -1,4 +1,4 @@
-module github.com/an0nfunc/gateway-auto-listener
+module github.com/itsh-cloud/gateway-auto-listener
 
 go 1.26.0
 

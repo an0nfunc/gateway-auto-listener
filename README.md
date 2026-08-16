@@ -1,9 +1,9 @@
 # gateway-auto-listener
 
-[![CI](https://github.com/an0nfunc/gateway-auto-listener/actions/workflows/ci.yaml/badge.svg)](https://github.com/an0nfunc/gateway-auto-listener/actions/workflows/ci.yaml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/an0nfunc/gateway-auto-listener)](https://goreportcard.com/report/github.com/an0nfunc/gateway-auto-listener)
-[![License](https://img.shields.io/github/license/an0nfunc/gateway-auto-listener)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/an0nfunc/gateway-auto-listener)](https://github.com/an0nfunc/gateway-auto-listener/releases)
+[![CI](https://github.com/itsh-cloud/gateway-auto-listener/actions/workflows/ci.yaml/badge.svg)](https://github.com/itsh-cloud/gateway-auto-listener/actions/workflows/ci.yaml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/itsh-cloud/gateway-auto-listener)](https://goreportcard.com/report/github.com/itsh-cloud/gateway-auto-listener)
+[![License](https://img.shields.io/github/license/itsh-cloud/gateway-auto-listener)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/itsh-cloud/gateway-auto-listener)](https://github.com/itsh-cloud/gateway-auto-listener/releases)
 
 Kubernetes controller that automatically creates Gateway API HTTPS listeners from HTTPRoutes annotated with cert-manager issuer annotations.
 
@@ -59,7 +59,7 @@ cert-manager's [gateway-shim](https://cert-manager.io/docs/usage/gateway/) works
 kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/latest/download/standard-install.yaml
 
 # Deploy gateway-auto-listener
-kubectl apply -f https://raw.githubusercontent.com/an0nfunc/gateway-auto-listener/main/deploy/manifests.yaml
+kubectl apply -f https://raw.githubusercontent.com/itsh-cloud/gateway-auto-listener/main/deploy/manifests.yaml
 
 # Create an HTTPRoute with a cert-manager annotation
 kubectl apply -f - <<EOF
@@ -89,7 +89,7 @@ The controller will automatically create an HTTPS listener for `my-app.example.c
 ### Helm
 
 ```bash
-helm install gateway-auto-listener oci://ghcr.io/an0nfunc/gateway-auto-listener/chart \
+helm install gateway-auto-listener oci://ghcr.io/itsh-cloud/charts/gateway-auto-listener \
   --namespace nginx-gateway \
   --set gateway.name=default \
   --set gateway.namespace=nginx-gateway
@@ -98,7 +98,7 @@ helm install gateway-auto-listener oci://ghcr.io/an0nfunc/gateway-auto-listener/
 Or from source:
 
 ```bash
-git clone https://github.com/an0nfunc/gateway-auto-listener.git
+git clone https://github.com/itsh-cloud/gateway-auto-listener.git
 helm install gateway-auto-listener ./chart/gateway-auto-listener \
   --namespace nginx-gateway
 ```
@@ -106,7 +106,7 @@ helm install gateway-auto-listener ./chart/gateway-auto-listener \
 ### Raw Manifests
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/an0nfunc/gateway-auto-listener/main/deploy/manifests.yaml
+kubectl apply -f https://raw.githubusercontent.com/itsh-cloud/gateway-auto-listener/main/deploy/manifests.yaml
 ```
 
 ## Configuration

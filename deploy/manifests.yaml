@@ -58,7 +58,7 @@ spec:
       serviceAccountName: gateway-auto-listener
       containers:
         - name: controller
-          image: ghcr.io/an0nfunc/gateway-auto-listener:latest
+          image: ghcr.io/itsh-cloud/gateway-auto-listener:latest
           args:
             - --gateway-name=default
             - --gateway-namespace=nginx-gateway

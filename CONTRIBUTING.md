@@ -5,7 +5,7 @@ Thank you for your interest in contributing!
 ## Development Setup
 
 1. **Prerequisites**: Go 1.24+, Docker, `just`, `helm`
-2. **Clone**: `git clone https://github.com/an0nfunc/gateway-auto-listener.git`
+2. **Clone**: `git clone https://github.com/itsh-cloud/gateway-auto-listener.git`
 3. **Dependencies**: `just deps`
 4. **Build**: `just build`
 5. **Test**: `just test`

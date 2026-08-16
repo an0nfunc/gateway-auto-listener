@@ -14,7 +14,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/an0nfunc/gateway-auto-listener/internal/controller"
+	"github.com/itsh-cloud/gateway-auto-listener/internal/controller"
 )
 
 var (
@@ -64,7 +64,7 @@ func main() {
 		Scheme:                 scheme,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         true,
-		LeaderElectionID:       "gateway-auto-listener.an0nfunc.github.io",
+		LeaderElectionID:       "gateway-auto-listener.itsh.dev",
 		Metrics: metricsserver.Options{
 			BindAddress: metricsAddr,
 		},
