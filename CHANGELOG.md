@@ -21,7 +21,9 @@
 - The chart is now actually published by CI. Earlier versions documented a Helm
   OCI install that no release ever pushed, so `helm install` from the registry
   could only fail. Releases also fail fast if `Chart.yaml` and the tag disagree.
-- Dependency update: gateway-api v1.6.1.
+- Dependency updates: gateway-api v1.6.1, Go toolchain 1.26.6 and
+  golang.org/x/text v0.39.0 to clear govulncheck findings (GO-2026-6218,
+  GO-2026-6090, GO-2026-6089, GO-2026-5972, GO-2026-5970, GO-2026-5026).
 
 ## v0.2.4
 
