@@ -6,15 +6,56 @@
   "platformAutomerge": true,
   "packageRules": [
     {
+      "description": "Soak period before an update is eligible. Scoped by datasource on purpose: minimumReleaseAgeBehaviour defaults to timestamp-required, so a bare global value would withhold FOREVER anything whose datasource reports no release timestamp. docker is excluded for that reason (it reports a timestamp only for Docker Hub), which does mean container images get no soak and rely on review instead.",
+      "matchDatasources": [
+        "go",
+        "maven",
+        "pypi",
+        "crate",
+        "nuget",
+        "rubygems",
+        "packagist",
+        "hex",
+        "helm"
+      ],
+      "minimumReleaseAge": "3 days"
+    },
+    {
+      "description": "npm is where automated, worm-style compromises actually land, and an npm patch is rarely urgent. Does not cover transitive deps: lockfile regeneration re-resolves a bumped package's own ranges with no soak.",
+      "matchDatasources": [
+        "npm"
+      ],
+      "minimumReleaseAge": "7 days"
+    },
+    {
       "description": "Auto-merge patch and minor updates once CI passes; hold majors for manual review.",
-      "matchUpdateTypes": ["patch", "minor", "digest", "pin", "pinDigest"],
+      "matchUpdateTypes": [
+        "patch",
+        "minor",
+        "digest",
+        "pin",
+        "pinDigest"
+      ],
       "automerge": true
     },
     {
       "description": "Major bumps need a human (breaking changes likely).",
-      "matchUpdateTypes": ["major"],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "automerge": false,
-      "addLabels": ["needs-review"]
+      "addLabels": [
+        "needs-review"
+      ]
     }
-  ]
+  ],
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "schedule": [
+      "at any time"
+    ],
+    "addLabels": [
+      "security"
+    ]
+  }
 }
